@@ -1,0 +1,245 @@
+costs:
+
+#### `config.py`
+ copy
+python
+1
+2
+class Config:
+    DATABASE_PATH = "task_manager.db"
+
+
+#### `db_manager.py`
+ copy
+python
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+import sqlite3
+from pathlib import Path
+
+class DatabaseError(Exception):
+    pass
+
+class DatabaseManager:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.setup_database()
+
+    def setup_database(self):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executescript('''
+                    CREATE TABLE IF NOT EXISTS tasks (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT,
+                        command TEXT,
+                        parameters TEXT,
+                        success_rate REAL,
+                        usage_count INTEGER,
+                        last_used TIMESTAMP,
+                        created_at TIMESTAMP,
+                        category TEXT,
+                        requires_confirmation BOOLEAN
+                    );
+                ''')
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to set up the database: {e}")
+
+    def execute_query(self, query: str, params: tuple = ()) -> list:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cur = conn.cursor()
+                cur.execute(query, params)
+                return cur.fetchall()
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to execute query: {e}")
+
+    def execute_update(self, query: str, params: tuple):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cur = conn.cursor()
+                cur.execute(query, params)
+                conn.commit()
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to execute update: {e}")
+
+
+#### `task_manager.py`
+ copy
+python
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+import json
+import asyncio
+import re
+from datetime import datetime
+from enum import Enum
+from db_manager import DatabaseManager
+
+class TaskCategory(Enum):
+    FILE_OPERATIONS = "File Operations"
+    NETWORK_OPERATIONS = "Network Operations"
+    DATA_TRANSFORMATION = "Data Transformation"
+    DATA_ANALYSIS = "Data Analysis"
+    GENERAL = "General"
+
+class AdaptiveTaskManager:
+    def __init__(self, db_path: str):
+        self.db_manager = DatabaseManager(db_path)
+
+    async def learn_new_task(self, input_text: str, command: str, success: bool) -> int:
+        params = self.extract_parameters(input_text, command)
+        task_name = self.generate_task_name(input_text)
+        category = self.classify_task_category(input_text)
+
+        self.db_manager.execute_update('''
+            INSERT INTO tasks (
+                name, command, parameters, success_rate,
+                usage_count, last_used, created_at,
+                category, requires_confirmation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (task_name, command, json.dumps(params), 1.0 if success else 0.0,
+              1, datetime.now(), datetime.now(), category.value, False))
+
+        return self.db_manager.execute_query('SELECT last_insert_rowid()')[0][0]
+
+    def extract_parameters(self, input_text: str, command: str) -> dict:
+        # Simple parameter extraction logic
+        params = {}
+        matches = re.findall(r'--(\w+)=(\S+)', input_text)
+        for name, value in matches:
+            params[name] = value
+        return params
+
+    def generate_task_name(self, input_text: str) -> str:
+        return "Task: " + (input_text[:30] + "..." if len(input_text) > 30 else input_text)
+
+    def classify_task_category(self, input_text: str) -> TaskCategory:
+        keywords = {
+            'file': TaskCategory.FILE_OPERATIONS,
+            'download': TaskCategory.NETWORK_OPERATIONS,
+            'upload': TaskCategory.NETWORK_OPERATIONS,
+            'convert': TaskCategory.DATA_TRANSFORMATION,
+            'process': TaskCategory.DATA_ANALYSIS
+        }
+
+        for keyword, category in keywords.items():
+            if keyword in input_text.lower():
+                return category
+        return TaskCategory.GENERAL
+
+# Example usage in main.py
+async def main():
+    task_manager = AdaptiveTaskManager(Config.DATABASE_PATH)
+
+    # Learn a new task
+    task_id = await task_manager.learn_new_task("Download the latest reports --file_url=http://example.com/report", "download <file_url>", success=True)
